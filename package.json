@@ -1,11 +1,8 @@
 {
-  "name": "relay-function",
-  "version": "1.0.0",
-  "private": true,
+  "name": "hono-relay",
   "type": "module",
   "dependencies": {
-    "multer": "^1.4.5-lts.1",
-    "next-connect": "^0.12.2",
-    "form-data": "^4.0.0"
+    "hono": "^4.3.7",
+    "undici": "^6.6.1"
   }
 }
