@@ -1,6 +1,6 @@
 import nextConnect from 'next-connect';
 import multer from 'multer';
-import sendFileToTelegram from '../../utils/sendFileToTelegram.js'; // Adjust path if needed
+import sendFileToTelegram from '../utils/sendFileToTelegram.js'; // Adjust path if needed
 
 export const config = { api: { bodyParser: false } };
 const upload = multer();
